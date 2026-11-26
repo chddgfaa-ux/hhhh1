@@ -1,55 +1,77 @@
-
 name: Build Prime Voice APK
 
 on:
-  workflow_dispatch:
   push:
-    paths:
-      - '*.zip'
-      - '.github/workflows/android-apk.yml'
+    branches: [ "main" ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   build:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Extract project
+      - name: Find and extract project ZIP
+        shell: bash
         run: |
-          mkdir extracted
-          unzip -q PrimeVoice_FreeFire_AndroidPhone_Build.zip -d extracted
-          PROJECT_DIR=$(dirname "$(find extracted -name settings.gradle.kts -print -quit)")
-          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+          set -e
+          mkdir -p extracted
+          ZIP_FILE="$(find . -maxdepth 2 -type f -iname '*.zip' -not -path './extracted/*' | head -n 1)"
+          if [ -z "$ZIP_FILE" ]; then
+            echo "ERROR: No ZIP file found in the repository."
+            echo "Upload the Prime Voice project ZIP to the repository root."
+            exit 1
+          fi
+          echo "Using ZIP: $ZIP_FILE"
+          unzip -q "$ZIP_FILE" -d extracted
 
-      - name: Setup Java
+      - name: Locate Android Gradle project
+        shell: bash
+        run: |
+          set -e
+          SETTINGS_FILE="$(find extracted -type f \( -name 'settings.gradle' -o -name 'settings.gradle.kts' \) | head -n 1)"
+          if [ -z "$SETTINGS_FILE" ]; then
+            echo "ERROR: Could not find settings.gradle or settings.gradle.kts inside the ZIP."
+            echo "The ZIP may not contain the Android project source."
+            find extracted -maxdepth 4 -type f | head -n 100
+            exit 1
+          fi
+          PROJECT_DIR="$(dirname "$SETTINGS_FILE")"
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+          echo "Found project at: $PROJECT_DIR"
+          ls -la "$PROJECT_DIR"
+
+      - name: Set up Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
 
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
       - name: Install Android SDK packages
         run: |
-          export ANDROID_HOME=/usr/local/lib/android/sdk
-          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses
-          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
-            "platform-tools" \
-            "platforms;android-35" \
-            "build-tools;35.0.0"
+          yes | sdkmanager --licenses
+          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
 
-      - name: Setup Gradle
+      - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
 
       - name: Build APK
-        run: |
-          cd "$PROJECT_DIR"
-          gradle :app:assembleDebug
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: gradle :app:assembleDebug
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: Prime-Voice-debug-apk
-          path: extracted/**/app/build/outputs/apk/debug/app-debug.apk
+          path: ${{ env.PROJECT_DIR }}/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
